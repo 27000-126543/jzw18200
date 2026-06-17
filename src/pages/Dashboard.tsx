@@ -51,6 +51,36 @@ export default function Dashboard() {
     return harvests.reduce((sum, h) => sum + h.actualYieldKg * h.unitPrice, 0);
   }, [harvests]);
 
+  const lastMonthSameCount = useMemo(() => {
+    const now = new Date();
+    now.setMonth(now.getMonth() - 1);
+    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    return operations.filter(op => op.date.startsWith(ym)).length;
+  }, [operations]);
+
+  const operationTrend = useMemo(() => {
+    if (lastMonthSameCount === 0 && currentMonthOperations.length === 0) return undefined;
+    if (lastMonthSameCount === 0) return currentMonthOperations.length > 0 ? undefined : 0;
+    const pct = Math.round(((currentMonthOperations.length - lastMonthSameCount) / lastMonthSameCount) * 100);
+    return pct;
+  }, [currentMonthOperations, lastMonthSameCount]);
+
+  const revenueTrend = useMemo(() => {
+    if (harvests.length === 0) return undefined;
+    const now = new Date();
+    const thisYear = now.getFullYear();
+    const lastYear = thisYear - 1;
+    const sumThis = harvests
+      .filter(h => h.harvestDate.startsWith(String(thisYear)))
+      .reduce((s, h) => s + h.actualYieldKg * h.unitPrice, 0);
+    const sumLast = harvests
+      .filter(h => h.harvestDate.startsWith(String(lastYear)))
+      .reduce((s, h) => s + h.actualYieldKg * h.unitPrice, 0);
+    if (sumLast === 0 && sumThis === 0) return undefined;
+    if (sumLast === 0) return undefined;
+    return Math.round(((sumThis - sumLast) / sumLast) * 100);
+  }, [harvests]);
+
   const sortedReminders = useMemo(() => {
     const weight: Record<ReminderPriority, number> = { high: 0, medium: 1, low: 2 };
     return [...reminders]
@@ -111,10 +141,16 @@ export default function Dashboard() {
   }, [harvests, seasons]);
 
   const handleQuickAction = (action: string) => {
-    if (action === 'field') navigate('/fields');
-    else if (action === 'operation') navigate('/seasons');
-    else if (action === 'harvest') navigate('/seasons');
-    showToast(`已跳转至${action === 'field' ? '地块管理' : action === 'operation' ? '种植季' : '收成录入'}`, 'info');
+    if (action === 'field') {
+      navigate('/fields');
+      showToast('已跳转至地块管理', 'info');
+    } else if (action === 'operation') {
+      navigate('/operations?new=1');
+      showToast('已跳转至操作录入', 'info');
+    } else if (action === 'harvest') {
+      navigate('/harvest?new=1');
+      showToast('已跳转至收成录入', 'info');
+    }
   };
 
   const handleMarkReminderDone = (id: string) => {
@@ -136,7 +172,7 @@ export default function Dashboard() {
           value={fields.length}
           suffix="个"
           icon={MapPin}
-          trend={0}
+          trend={fields.length > 0 ? 0 : undefined}
           gradient="primary"
         />
         <StatCard
@@ -144,7 +180,7 @@ export default function Dashboard() {
           value={growingSeasons.length}
           suffix="季"
           icon={Sprout}
-          trend={growingSeasons.length >= 2 ? 2 : 0}
+          trend={undefined}
           gradient="secondary"
         />
         <StatCard
@@ -152,14 +188,14 @@ export default function Dashboard() {
           value={currentMonthOperations.length}
           suffix="次"
           icon={ClipboardList}
-          trend={3}
+          trend={operationTrend}
           gradient="accent"
         />
         <StatCard
-          title="预估总收益"
-          value={`¥${(totalRevenue || 68420).toLocaleString('zh-CN')}`}
+          title="已登记收益"
+          value={`¥${totalRevenue.toLocaleString('zh-CN')}`}
           icon={TrendingUp}
-          trend={12.5}
+          trend={revenueTrend}
           gradient="info"
         />
       </div>
@@ -233,7 +269,7 @@ export default function Dashboard() {
                       标记完成
                     </button>
                     <button
-                      onClick={() => navigate('/seasons')}
+                      onClick={() => navigate('/reminders')}
                       className="btn-secondary px-2.5 py-1 text-xs shrink-0"
                     >
                       查看

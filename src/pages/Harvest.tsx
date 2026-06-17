@@ -1,4 +1,5 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import PageHeader from '@/components/PageHeader';
 import Modal from '@/components/Modal';
@@ -50,6 +51,8 @@ export default function Harvest() {
   const deleteHarvest = useAppStore((s) => s.deleteHarvest);
   const showToast = useAppStore((s) => s.showToast);
 
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const [activeTab, setActiveTab] = useState<TabKey>('records');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAbnormalAlertOpen, setIsAbnormalAlertOpen] = useState(false);
@@ -79,6 +82,13 @@ export default function Harvest() {
     qualityLevel: 'good' as QualityLevel,
     unitPrice: '',
   });
+
+  useEffect(() => {
+    if (searchParams.get('new') === '1') {
+      setIsAddModalOpen(true);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const getSeasonInfo = useCallback(
     (seasonId: string) => {

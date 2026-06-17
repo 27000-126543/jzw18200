@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import PageHeader from '@/components/PageHeader';
 import Modal from '@/components/Modal';
@@ -50,6 +51,9 @@ export default function Operations() {
   const deleteOperation = useAppStore((s) => s.deleteOperation);
   const showToast = useAppStore((s) => s.showToast);
 
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+
   const [viewMode, setViewMode] = useState<'timeline' | 'list'>('timeline');
   const [selectedSeasonId, setSelectedSeasonId] = useState<string>('all');
   const [selectedType, setSelectedType] = useState<OperationType | 'all'>('all');
@@ -60,6 +64,13 @@ export default function Operations() {
     open: false,
     id: null,
   });
+
+  useEffect(() => {
+    if (searchParams.get('new') === '1') {
+      setIsModalOpen(true);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const [form, setForm] = useState({
     seasonId: '',
