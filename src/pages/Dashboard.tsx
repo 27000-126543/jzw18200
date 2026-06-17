@@ -5,8 +5,12 @@ import {
   Plus, Calendar, ArrowRight, Bell, CheckCircle2,
   BarChart3, Coins, Leaf, Wheat, Droplets,
   ChevronDown, CircleDollarSign, CalendarRange,
+  Trophy, Award, Target,
 } from 'lucide-react';
-import { format, parseISO, differenceInDays, addDays, startOfYear, endOfYear, isWithinInterval } from 'date-fns';
+import {
+  format, parseISO, startOfYear, endOfYear, startOfMonth, endOfMonth,
+  subMonths, isWithinInterval, getYear, getMonth, addDays, differenceInDays,
+} from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { useAppStore } from '@/store/useAppStore';
 import PageHeader from '@/components/PageHeader';
@@ -108,24 +112,54 @@ export default function Dashboard() {
     return Math.round(((sumThis - sumLast) / sumLast) * 100);
   }, [harvests]);
 
-  // ==== 2. 经营概览数据 ====
-  const overviewData = useMemo<OverviewPoint[]>(() => {
+  // ==== 2. 经营概览数据（自然月）====
+  const { overviewData, overviewDateRange } = useMemo(() => {
     const now = new Date();
-    const points: OverviewPoint[] = [];
-    const count = overviewRange === 'year' ? 12 : 12;
-    const startPoint = overviewRange === 'year' ? startOfYear(now) : addDays(now, -330);
+    const months: { year: number; month: number; label: string; start: Date; end: Date }[] = [];
 
-    for (let i = 0; i < count; i++) {
-      const d = addDays(startPoint, i * 30);
-      const label = format(d, 'M月', { locale: zhCN });
-      points.push({ label, value: 0, yieldKg: 0, revenue: 0, cost: 0, profit: 0 });
+    if (overviewRange === 'year') {
+      // 本年度：1月-12月
+      const yr = getYear(now);
+      for (let m = 0; m < 12; m++) {
+        const d = new Date(yr, m, 1);
+        months.push({
+          year: yr,
+          month: m,
+          label: format(d, 'M月', { locale: zhCN }),
+          start: startOfMonth(d),
+          end: endOfMonth(d),
+        });
+      }
+    } else {
+      // 近12个月：最近12个完整月份（不包含当前月）
+      for (let i = 11; i >= 0; i--) {
+        const d = subMonths(startOfMonth(now), i);
+        months.push({
+          year: getYear(d),
+          month: getMonth(d),
+          label: format(d, 'M月', { locale: zhCN }),
+          start: startOfMonth(d),
+          end: endOfMonth(d),
+        });
+      }
     }
 
-    // 收成数据聚合
+    const points: OverviewPoint[] = months.map(m => ({
+      label: m.label,
+      value: 0,
+      yieldKg: 0,
+      revenue: 0,
+      cost: 0,
+      profit: 0,
+    }));
+
+    // 收成数据按自然月聚合
     harvests.forEach(h => {
       const hd = parseISO(h.harvestDate);
-      const idx = Math.floor(differenceInDays(hd, startPoint) / 30);
-      if (idx >= 0 && idx < count) {
+      const hYear = getYear(hd);
+      const hMonth = getMonth(hd);
+      const idx = months.findIndex(m => m.year === hYear && m.month === hMonth);
+      if (idx !== -1) {
         points[idx].yieldKg += h.actualYieldKg;
         const rev = h.actualYieldKg * h.unitPrice;
         points[idx].revenue += rev;
@@ -133,18 +167,25 @@ export default function Dashboard() {
       }
     });
 
-    // 成本数据聚合
+    // 成本数据按自然月聚合
     costs.forEach(c => {
       const cd = parseISO(c.date);
-      const idx = Math.floor(differenceInDays(cd, startPoint) / 30);
-      if (idx >= 0 && idx < count) {
+      const cYear = getYear(cd);
+      const cMonth = getMonth(cd);
+      const idx = months.findIndex(m => m.year === cYear && m.month === cMonth);
+      if (idx !== -1) {
         points[idx].cost += c.amount;
         points[idx].profit -= c.amount;
       }
     });
 
     points.forEach(p => { p.value = p.profit; });
-    return points;
+
+    const dateRange = months.length > 0
+      ? { from: format(months[0].start, 'yyyy-MM-dd'), to: format(months[months.length - 1].end, 'yyyy-MM-dd') }
+      : { from: '', to: '' };
+
+    return { overviewData: points, overviewDateRange: dateRange };
   }, [overviewRange, harvests, costs]);
 
   const hasOverviewData = useMemo(
@@ -203,6 +244,116 @@ export default function Dashboard() {
     };
   }, [harvests, seasons]);
 
+  // ==== 3.5 近12个月排行榜（作物&地块）====
+  const { cropRanking, fieldRanking, hasRankingData } = useMemo(() => {
+    const now = new Date();
+    const startDate = startOfMonth(subMonths(now, 11));
+    const endDate = endOfMonth(subMonths(now, 0));
+
+    // 过滤时间范围内的收成和成本
+    const inRangeHarvests = harvests.filter(h => {
+      const hd = parseISO(h.harvestDate);
+      return isWithinInterval(hd, { start: startDate, end: endDate });
+    });
+    const inRangeCosts = costs.filter(c => {
+      const cd = parseISO(c.date);
+      return isWithinInterval(cd, { start: startDate, end: endDate });
+    });
+
+    // 涉及的种植季
+    const seasonIds = new Set<string>();
+    inRangeHarvests.forEach(h => seasonIds.add(h.seasonId));
+    inRangeCosts.forEach(c => seasonIds.add(c.seasonId));
+
+    // 作物收益排行
+    const cropMap = new Map<string, { revenue: number; cost: number; profit: number; yieldKg: number }>();
+    inRangeHarvests.forEach(h => {
+      const season = seasons.find(s => s.id === h.seasonId);
+      if (!season) return;
+      const crop = season.cropName;
+      if (!cropMap.has(crop)) {
+        cropMap.set(crop, { revenue: 0, cost: 0, profit: 0, yieldKg: 0 });
+      }
+      const data = cropMap.get(crop)!;
+      const rev = h.actualYieldKg * h.unitPrice;
+      data.revenue += rev;
+      data.profit += rev;
+      data.yieldKg += h.actualYieldKg;
+    });
+    inRangeCosts.forEach(c => {
+      const season = seasons.find(s => s.id === c.seasonId);
+      if (!season) return;
+      const crop = season.cropName;
+      if (!cropMap.has(crop)) {
+        cropMap.set(crop, { revenue: 0, cost: 0, profit: 0, yieldKg: 0 });
+      }
+      const data = cropMap.get(crop)!;
+      data.cost += c.amount;
+      data.profit -= c.amount;
+    });
+
+    const cropList = Array.from(cropMap.entries())
+      .map(([name, d]) => ({ name, ...d }))
+      .sort((a, b) => b.profit - a.profit)
+      .slice(0, 3);
+
+    // 地块效率排行
+    const fieldMap = new Map<string, {
+      fieldName: string; areaMu: number; revenue: number; cost: number;
+      profit: number; yieldKg: number; yieldPerMu: number; profitPerMu: number;
+    }>();
+
+    // 初始化所有地块
+    fields.forEach(f => {
+      fieldMap.set(f.id, {
+        fieldName: f.name,
+        areaMu: f.areaMu,
+        revenue: 0, cost: 0, profit: 0, yieldKg: 0,
+        yieldPerMu: 0, profitPerMu: 0,
+      });
+    });
+
+    inRangeHarvests.forEach(h => {
+      const season = seasons.find(s => s.id === h.seasonId);
+      if (!season) return;
+      const fData = fieldMap.get(season.fieldId);
+      if (!fData) return;
+      const rev = h.actualYieldKg * h.unitPrice;
+      fData.revenue += rev;
+      fData.profit += rev;
+      fData.yieldKg += h.actualYieldKg;
+    });
+
+    inRangeCosts.forEach(c => {
+      const season = seasons.find(s => s.id === c.seasonId);
+      if (!season) return;
+      const fData = fieldMap.get(season.fieldId);
+      if (!fData) return;
+      fData.cost += c.amount;
+      fData.profit -= c.amount;
+    });
+
+    // 计算亩均指标
+    fieldMap.forEach(d => {
+      if (d.areaMu > 0) {
+        d.yieldPerMu = d.yieldKg / d.areaMu;
+        d.profitPerMu = d.profit / d.areaMu;
+      }
+    });
+
+    const fieldList = Array.from(fieldMap.entries())
+      .filter(([, d]) => d.yieldKg > 0 || d.revenue > 0 || d.cost > 0)
+      .map(([id, d]) => ({ id, ...d }))
+      .sort((a, b) => b.profitPerMu - a.profitPerMu)
+      .slice(0, 3);
+
+    return {
+      cropRanking: cropList,
+      fieldRanking: fieldList,
+      hasRankingData: cropList.length > 0 || fieldList.length > 0,
+    };
+  }, [harvests, seasons, fields, costs]);
+
   // ==== 4. 待办提醒 & 最近操作 ====
   const sortedReminders = useMemo(() => {
     const weight: Record<ReminderPriority, number> = { high: 0, medium: 1, low: 2 };
@@ -249,18 +400,38 @@ export default function Dashboard() {
     navigate(`/reminders${params.toString() ? '?' + params.toString() : ''}`);
   };
 
-  const goToOperations = (seasonId?: string, opType?: OperationType) => {
+  const goToOperations = (seasonId?: string, opType?: OperationType, dateFrom?: string, dateTo?: string) => {
     const params = new URLSearchParams();
     if (seasonId) params.set('season', seasonId);
     if (opType) params.set('type', opType);
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
     navigate(`/operations${params.toString() ? '?' + params.toString() : ''}`);
   };
 
-  const goToFinance = (tab: 'cost' | 'revenue' = 'cost', seasonId?: string) => {
+  const goToFinance = (tab: 'cost' | 'revenue' = 'cost', seasonId?: string, category?: string, dateFrom?: string, dateTo?: string) => {
     const params = new URLSearchParams();
     params.set('tab', tab);
     if (seasonId) params.set('season', seasonId);
+    if (category) params.set('category', category);
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
     navigate(`/finance?${params.toString()}`);
+  };
+
+  const goToHarvest = (seasonId?: string, dateFrom?: string, dateTo?: string) => {
+    const params = new URLSearchParams();
+    if (seasonId) params.set('season', seasonId);
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
+    navigate(`/harvest${params.toString() ? '?' + params.toString() : ''}`);
+  };
+
+  const goToReports = (tab: 'variety' | 'field' | 'trend' = 'variety', year?: string) => {
+    const params = new URLSearchParams();
+    params.set('tab', tab);
+    if (year) params.set('year', year);
+    navigate(`/reports?${params.toString()}`);
   };
 
   const goToSeasons = (fieldId?: string) => {
@@ -404,7 +575,7 @@ export default function Dashboard() {
                   icon: Wheat,
                   color: 'text-farm-primary',
                   bg: 'bg-farm-primary/10',
-                  onClick: () => navigate('/harvest'),
+                  onClick: () => goToHarvest(undefined, overviewDateRange.from, overviewDateRange.to),
                 },
                 {
                   label: '总收入',
@@ -412,7 +583,7 @@ export default function Dashboard() {
                   icon: TrendingUp,
                   color: 'text-emerald-600',
                   bg: 'bg-emerald-50',
-                  onClick: () => goToFinance('revenue'),
+                  onClick: () => goToFinance('revenue', undefined, undefined, overviewDateRange.from, overviewDateRange.to),
                 },
                 {
                   label: '总成本',
@@ -420,7 +591,7 @@ export default function Dashboard() {
                   icon: CircleDollarSign,
                   color: 'text-amber-600',
                   bg: 'bg-amber-50',
-                  onClick: () => goToFinance('cost'),
+                  onClick: () => goToFinance('cost', undefined, undefined, overviewDateRange.from, overviewDateRange.to),
                 },
                 {
                   label: overviewSummary.profit >= 0 ? '净利润' : '净亏损',
@@ -428,7 +599,7 @@ export default function Dashboard() {
                   icon: Coins,
                   color: overviewSummary.profit >= 0 ? 'text-farm-primary-dark' : 'text-farm-danger',
                   bg: overviewSummary.profit >= 0 ? 'bg-farm-primary/10' : 'bg-farm-danger/10',
-                  onClick: () => goToFinance('revenue'),
+                  onClick: () => goToFinance('revenue', undefined, undefined, overviewDateRange.from, overviewDateRange.to),
                 },
               ].map(item => (
                 <button
@@ -505,6 +676,120 @@ export default function Dashboard() {
             </div>
           </>
         )}
+      </div>
+
+      {/* ==== 作物&地块排行榜 ==== */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* 作物收益排行 */}
+        <div className="card">
+          <div className="flex items-center justify-between mb-4">
+            <button
+              onClick={() => goToReports('variety')}
+              className="text-lg font-semibold text-farm-primary-dark flex items-center gap-2 hover:text-farm-primary transition-colors group"
+            >
+              <Trophy className="w-5 h-5 text-farm-secondary" />
+              作物收益排行
+              <span className="text-xs font-normal text-gray-500">近12个月</span>
+              <ArrowRight className="w-4 h-4 text-gray-400 group-hover:translate-x-0.5 transition-transform" />
+            </button>
+          </div>
+          {cropRanking.length === 0 ? (
+            <EmptyState
+              icon={Leaf}
+              title="暂无作物排行"
+              description="录入收成与成本后，将展示各作物的收益排名"
+            />
+          ) : (
+            <div className="space-y-3">
+              {cropRanking.map((crop, idx) => (
+                <button
+                  key={crop.name}
+                  onClick={() => goToReports('variety')}
+                  className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-farm-surface-alt transition-colors text-left group"
+                >
+                  <div className={cn(
+                    'w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm shrink-0',
+                    idx === 0 ? 'bg-amber-100 text-amber-700' :
+                    idx === 1 ? 'bg-gray-200 text-gray-600' :
+                    'bg-amber-50 text-amber-600'
+                  )}>
+                    {idx === 0 ? <Award className="w-4 h-4" /> : idx + 1}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2 mb-0.5">
+                      <span className="font-medium text-farm-primary-dark truncate">{crop.name}</span>
+                      <span className="text-sm font-semibold text-farm-success shrink-0">
+                        {fmtMoney(crop.profit)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-gray-500">
+                      <span>亩产 {fmtKg(crop.yieldKg)}</span>
+                      <span>·</span>
+                      <span>收入 {fmtMoney(crop.revenue)}</span>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 地块亩利润排行 */}
+        <div className="card">
+          <div className="flex items-center justify-between mb-4">
+            <button
+              onClick={() => goToReports('field')}
+              className="text-lg font-semibold text-farm-primary-dark flex items-center gap-2 hover:text-farm-primary transition-colors group"
+            >
+              <Target className="w-5 h-5 text-farm-primary" />
+              地块亩利润排行
+              <span className="text-xs font-normal text-gray-500">近12个月</span>
+              <ArrowRight className="w-4 h-4 text-gray-400 group-hover:translate-x-0.5 transition-transform" />
+            </button>
+          </div>
+          {fieldRanking.length === 0 ? (
+            <EmptyState
+              icon={MapPin}
+              title="暂无地块排行"
+              description="录入地块有收成记录后，将展示各地块的亩均效益排名"
+            />
+          ) : (
+            <div className="space-y-3">
+              {fieldRanking.map((field, idx) => (
+                <button
+                  key={field.id}
+                  onClick={() => goToReports('field')}
+                  className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-farm-surface-alt transition-colors text-left group"
+                >
+                  <div className={cn(
+                    'w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm shrink-0',
+                    idx === 0 ? 'bg-emerald-100 text-emerald-700' :
+                    idx === 1 ? 'bg-teal-100 text-teal-600' :
+                    'bg-green-50 text-green-600'
+                  )}>
+                    {idx === 0 ? <Award className="w-4 h-4" /> : idx + 1}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2 mb-0.5">
+                      <span className="font-medium text-farm-primary-dark truncate">{field.fieldName}</span>
+                      <span className={cn(
+                        'text-sm font-semibold shrink-0',
+                        field.profitPerMu >= 0 ? 'text-farm-success' : 'text-farm-danger'
+                      )}>
+                        {field.profitPerMu >= 0 ? '' : '-'}{fmtMoney(Math.abs(field.profitPerMu))}/亩
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-gray-500">
+                      <span>面积 {field.areaMu}亩</span>
+                      <span>·</span>
+                      <span>亩产 {fmtKg(field.yieldPerMu)}</span>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ==== 待办提醒 + 最近操作 ==== */}

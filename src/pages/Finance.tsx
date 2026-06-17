@@ -53,7 +53,11 @@ export default function Finance() {
       setActiveTab(tabFromUrl);
     }
     const seasonFromUrl = searchParams.get('season');
+    const categoryFromUrl = searchParams.get('category') as CostCategory | null;
     if (seasonFromUrl) setSeasonFilter(seasonFromUrl);
+    if (categoryFromUrl && ['seed','pesticide','fertilizer','labor','other'].includes(categoryFromUrl)) {
+      setCategoryFilter(categoryFromUrl);
+    }
     if (searchParams.get('new') === '1') {
       setModalOpen(true);
       setSearchParams({}, { replace: true });
@@ -82,6 +86,15 @@ export default function Finance() {
       .filter(c => categoryFilter === 'all' || c.category === categoryFilter)
       .sort((a, b) => parseISO(b.date).getTime() - parseISO(a.date).getTime()),
     [costs, seasonFilter, categoryFilter]);
+
+  const hasCostFilter = useMemo(() =>
+    seasonFilter !== 'all' || categoryFilter !== 'all',
+    [seasonFilter, categoryFilter]);
+
+  const clearCostFilters = () => {
+    setSeasonFilter('all');
+    setCategoryFilter('all');
+  };
 
   const costStructureData = useMemo(() => {
     const map = new Map<CostCategory, number>();
@@ -283,7 +296,23 @@ export default function Finance() {
                 </span>
               </div>
               {filteredCosts.length === 0 ? (
-                <EmptyState icon={Wallet} title="暂无成本记录" description="点击右上角新增成本开始记录" />
+                hasCostFilter ? (
+                  <EmptyState
+                    icon={Wallet}
+                    title="未找到匹配的成本记录"
+                    description="当前筛选条件下没有成本记录，试试调整筛选条件"
+                    variant="no-match"
+                    onClearFilter={clearCostFilters}
+                  />
+                ) : (
+                  <EmptyState
+                    icon={Wallet}
+                    title="暂无成本记录"
+                    description="点击右上角新增成本开始记录您的投入"
+                    actionText="新增成本"
+                    onAction={() => setModalOpen(true)}
+                  />
+                )
               ) : (
                 <div className="overflow-x-auto -mx-5">
                   <table className="table-wrap">

@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import PageHeader from '@/components/PageHeader';
 import Modal from '@/components/Modal';
+import EmptyState from '@/components/EmptyState';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import {
   OPERATION_TYPE_LABEL,
@@ -72,8 +73,12 @@ export default function Operations() {
     }
     const seasonFromUrl = searchParams.get('season');
     const typeFromUrl = searchParams.get('type') as OperationType | null;
+    const dateFromUrl = searchParams.get('dateFrom');
+    const dateToUrl = searchParams.get('dateTo');
     if (seasonFromUrl) setSelectedSeasonId(seasonFromUrl);
     if (typeFromUrl) setSelectedType(typeFromUrl);
+    if (dateFromUrl) setDateFrom(dateFromUrl);
+    if (dateToUrl) setDateTo(dateToUrl);
   }, [searchParams, setSearchParams]);
 
   const [form, setForm] = useState({
@@ -109,6 +114,17 @@ export default function Operations() {
       })
       .sort((a, b) => b.date.localeCompare(a.date));
   }, [operations, selectedSeasonId, selectedType, dateFrom, dateTo]);
+
+  const hasFilter = useMemo(() => {
+    return selectedSeasonId !== 'all' || selectedType !== 'all' || (dateFrom && dateTo);
+  }, [selectedSeasonId, selectedType, dateFrom, dateTo]);
+
+  const clearFilters = () => {
+    setSelectedSeasonId('all');
+    setSelectedType('all');
+    setDateFrom('');
+    setDateTo('');
+  };
 
   const getSeasonInfo = (seasonId: string) => {
     const season = seasons.find((s) => s.id === seasonId);
@@ -260,10 +276,24 @@ export default function Operations() {
       </div>
 
       {filteredOperations.length === 0 ? (
-        <div className="card py-16 text-center">
-          <Leaf className="w-16 h-16 text-farm-border mx-auto mb-4" />
-          <p className="text-gray-500 text-lg">暂无操作记录</p>
-          <p className="text-gray-400 text-sm mt-1">点击右上角"新增操作记录"开始记录</p>
+        <div className="card">
+          {hasFilter ? (
+            <EmptyState
+              icon={List}
+              title="未找到匹配的操作记录"
+              description="当前筛选条件下没有操作记录，试试调整筛选条件"
+              variant="no-match"
+              onClearFilter={clearFilters}
+            />
+          ) : (
+            <EmptyState
+              icon={Leaf}
+              title="暂无操作记录"
+              description="开始记录您的农事操作，追溯每一次田间作业"
+              actionText="新增操作记录"
+              onAction={() => setIsModalOpen(true)}
+            />
+          )}
         </div>
       ) : viewMode === 'timeline' ? (
         <div className="relative">

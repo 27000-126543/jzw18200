@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   BarChart3, Download, Trophy, MapPin, Calendar,
   TrendingUp, Award, Star, Target, Zap, Leaf,
@@ -18,8 +19,18 @@ type TabKey = 'variety' | 'field' | 'trend';
 
 export default function Reports() {
   const { fields, seasons, costs, harvests, showToast } = useAppStore();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<TabKey>('variety');
   const [yearFilter, setYearFilter] = useState<string>('all');
+
+  useEffect(() => {
+    const tabFromUrl = searchParams.get('tab') as TabKey | null;
+    if (tabFromUrl && ['variety', 'field', 'trend'].includes(tabFromUrl)) {
+      setActiveTab(tabFromUrl);
+    }
+    const yearFromUrl = searchParams.get('year');
+    if (yearFromUrl) setYearFilter(yearFromUrl);
+  }, [searchParams, setSearchParams]);
 
   const availableYears = useMemo(() => {
     const years = new Set<number>();

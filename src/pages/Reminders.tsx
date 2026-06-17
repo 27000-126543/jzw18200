@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import PageHeader from '@/components/PageHeader';
 import Modal from '@/components/Modal';
+import EmptyState from '@/components/EmptyState';
 import { CROP_VARIETIES } from '@/data/mockData';
 import {
   REMINDER_PRIORITY_LABEL,
@@ -47,6 +48,7 @@ export default function Reminders() {
   const navigate = useNavigate();
 
   const [activeTab, setActiveTab] = useState<TabKey>('all');
+  const [seasonFilter, setSeasonFilter] = useState<string>('all');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [cropVarieties, setCropVarieties] = useState<CropVariety[]>(CROP_VARIETIES);
   const [advanceDays, setAdvanceDays] = useState(2);
@@ -57,9 +59,7 @@ export default function Reminders() {
       setActiveTab(tabFromUrl);
     }
     const seasonFromUrl = searchParams.get('season');
-    if (seasonFromUrl) {
-      // season筛选可后续扩展
-    }
+    if (seasonFromUrl) setSeasonFilter(seasonFromUrl);
   }, [searchParams]);
 
   const today = useMemo(() => new Date(), []);
@@ -86,6 +86,7 @@ export default function Reminders() {
 
   const filteredReminders = useMemo(() => {
     return reminders.filter((r) => {
+      if (seasonFilter !== 'all' && r.seasonId !== seasonFilter) return false;
       if (activeTab === 'all') return true;
       if (activeTab === 'overdue') {
         const diff = differenceInDays(parseISO(r.targetDate), today);
@@ -97,7 +98,16 @@ export default function Reminders() {
       }
       return r.status === activeTab;
     });
-  }, [reminders, activeTab, today]);
+  }, [reminders, activeTab, today, seasonFilter]);
+
+  const hasFilter = useMemo(() =>
+    activeTab !== 'all' || seasonFilter !== 'all',
+    [activeTab, seasonFilter]);
+
+  const clearFilters = () => {
+    setActiveTab('all');
+    setSeasonFilter('all');
+  };
 
   const groupedByPriority = useMemo(() => {
     const groups: Record<ReminderPriority, typeof reminders> = {
@@ -337,14 +347,22 @@ export default function Reminders() {
       </div>
 
       {filteredReminders.length === 0 ? (
-        <div className="card py-16 text-center">
-          <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-farm-success/20 to-farm-primary/20 flex items-center justify-center">
-            <Sparkles className="w-10 h-10 text-farm-primary" />
-          </div>
-          <p className="text-gray-500 text-lg">暂无提醒事项</p>
-          <p className="text-gray-400 text-sm mt-1">
-            {activeTab === 'all' ? '系统将根据作物生长周期自动生成提醒' : '当前分类下没有提醒'}
-          </p>
+        <div className="card">
+          {hasFilter ? (
+            <EmptyState
+              icon={Bell}
+              title="未找到匹配的提醒"
+              description="当前筛选条件下没有提醒事项，试试调整筛选条件"
+              variant="no-match"
+              onClearFilter={clearFilters}
+            />
+          ) : (
+            <EmptyState
+              icon={Sparkles}
+              title="暂无提醒事项"
+              description="系统将根据作物生长周期自动生成关键节点提醒"
+            />
+          )}
         </div>
       ) : (
         <>
