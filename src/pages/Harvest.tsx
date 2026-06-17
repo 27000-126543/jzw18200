@@ -5,13 +5,14 @@ import PageHeader from '@/components/PageHeader';
 import Modal from '@/components/Modal';
 import StatCard from '@/components/StatCard';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import EmptyState from '@/components/EmptyState';
 import BarChart from '@/components/charts/BarChart';
 import {
   QUALITY_LEVEL_LABEL,
   type QualityLevel,
   type Harvest,
 } from '@/types';
-import { format, parseISO, differenceInDays } from 'date-fns';
+import { format, parseISO, differenceInDays, isWithinInterval } from 'date-fns';
 import {
   Plus,
   Scale,
@@ -54,6 +55,9 @@ export default function Harvest() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [activeTab, setActiveTab] = useState<TabKey>('records');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
+  const [seasonFilter, setSeasonFilter] = useState<string>('all');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAbnormalAlertOpen, setIsAbnormalAlertOpen] = useState(false);
   const [pendingHarvest, setPendingHarvest] = useState<{
@@ -88,6 +92,12 @@ export default function Harvest() {
       setIsAddModalOpen(true);
       setSearchParams({}, { replace: true });
     }
+    const dateFromUrl = searchParams.get('dateFrom');
+    const dateToUrl = searchParams.get('dateTo');
+    const seasonFromUrl = searchParams.get('season');
+    if (dateFromUrl) setDateFrom(dateFromUrl);
+    if (dateToUrl) setDateTo(dateToUrl);
+    if (seasonFromUrl) setSeasonFilter(seasonFromUrl);
   }, [searchParams, setSearchParams]);
 
   const getSeasonInfo = useCallback(
@@ -111,12 +121,35 @@ export default function Harvest() {
     });
   }, [seasons]);
 
+  const filteredHarvests = useMemo(() => {
+    return harvests.filter((h) => {
+      if (seasonFilter !== 'all' && h.seasonId !== seasonFilter) return false;
+      if (dateFrom && dateTo) {
+        const hd = parseISO(h.harvestDate);
+        if (!isWithinInterval(hd, { start: parseISO(dateFrom), end: parseISO(dateTo) })) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [harvests, seasonFilter, dateFrom, dateTo]);
+
+  const hasFilter = useMemo(() => {
+    return seasonFilter !== 'all' || (dateFrom && dateTo);
+  }, [seasonFilter, dateFrom, dateTo]);
+
+  const clearFilters = () => {
+    setDateFrom('');
+    setDateTo('');
+    setSeasonFilter('all');
+  };
+
   const summary = useMemo(() => {
     let totalYield = 0;
     let totalArea = 0;
     let totalRevenue = 0;
 
-    harvests.forEach((h) => {
+    filteredHarvests.forEach((h) => {
       const { field } = getSeasonInfo(h.seasonId);
       totalYield += h.actualYieldKg;
       totalArea += field?.areaMu ?? 0;
@@ -130,7 +163,7 @@ export default function Harvest() {
       avgPerMu: Math.round(avgPerMu),
       totalRevenue: Math.round(totalRevenue).toLocaleString(),
     };
-  }, [harvests, getSeasonInfo]);
+  }, [filteredHarvests, getSeasonInfo]);
 
   const checkAbnormality = (seasonId: string, actualYieldKg: number) => {
     const { season, field } = getSeasonInfo(seasonId);
@@ -368,6 +401,60 @@ export default function Harvest() {
         />
       </div>
 
+      {activeTab === 'records' && (
+        <div className="card mb-4">
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-600">
+              <Filter className="w-4 h-4 text-farm-primary" />
+              筛选条件：
+            </div>
+            <div className="flex-1 min-w-[180px] max-w-xs">
+              <select
+                className="select-field"
+                value={seasonFilter}
+                onChange={(e) => setSeasonFilter(e.target.value)}
+              >
+                <option value="all">全部种植季</option>
+                {seasons.map((s) => {
+                  const f = fields.find((f) => f.id === s.fieldId);
+                  return (
+                    <option key={s.id} value={s.id}>
+                      {f?.name ?? '未知'} - {s.cropName}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-gray-400" />
+              <input
+                type="date"
+                className="input-field w-36"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                placeholder="开始日期"
+              />
+              <span className="text-gray-400">至</span>
+              <input
+                type="date"
+                className="input-field w-36"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                placeholder="结束日期"
+              />
+            </div>
+            {hasFilter && (
+              <button
+                onClick={clearFilters}
+                className="btn-ghost text-sm"
+              >
+                清除筛选
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="card mb-6 p-0 overflow-hidden">
         <div className="flex items-center gap-1 p-1.5 bg-farm-surface-alt/60">
           <button
@@ -382,7 +469,7 @@ export default function Harvest() {
             <FileBarChart2 className="w-4 h-4" />
             收成记录
             <span className="inline-flex items-center justify-center min-w-[22px] h-5 px-1.5 rounded-full text-xs font-semibold bg-gray-200/60 text-gray-600">
-              {harvests.length}
+              {filteredHarvests.length}
             </span>
           </button>
           <button
@@ -402,12 +489,24 @@ export default function Harvest() {
 
       {activeTab === 'records' ? (
         <div className="card p-0 overflow-hidden">
-          {harvests.length === 0 ? (
-            <div className="py-16 text-center">
-              <Sprout className="w-16 h-16 text-farm-border mx-auto mb-4" />
-              <p className="text-gray-500 text-lg">暂无收成记录</p>
-              <p className="text-gray-400 text-sm mt-1">点击右上角"录入收成"开始记录</p>
-            </div>
+          {filteredHarvests.length === 0 ? (
+            hasFilter ? (
+              <EmptyState
+                icon={Sprout}
+                title="未找到匹配的收成记录"
+                description="当前筛选条件下没有收成记录，试试调整筛选条件"
+                variant="no-match"
+                onClearFilter={clearFilters}
+              />
+            ) : (
+              <EmptyState
+                icon={Sprout}
+                title="暂无收成记录"
+                description="点击右上角录入收成开始记录您的收获"
+                actionText="录入收成"
+                onAction={() => { setEditId(null); resetForm(); setIsAddModalOpen(true); }}
+              />
+            )
           ) : (
             <div className="overflow-x-auto">
               <table className="table-wrap">
@@ -426,7 +525,7 @@ export default function Harvest() {
                   </tr>
                 </thead>
                 <tbody>
-                  {harvests.map((h) => {
+                  {filteredHarvests.map((h) => {
                     const { season, field } = getSeasonInfo(h.seasonId);
                     const revenue = h.actualYieldKg * h.unitPrice;
                     return (

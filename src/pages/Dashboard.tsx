@@ -131,9 +131,10 @@ export default function Dashboard() {
         });
       }
     } else {
-      // 近12个月：最近12个完整月份（不包含当前月）
+      // 近12个月：最近12个完整月份（不包含当前月，从上月往前推11个月）
+      const lastMonthEnd = subMonths(startOfMonth(now), 1);
       for (let i = 11; i >= 0; i--) {
-        const d = subMonths(startOfMonth(now), i);
+        const d = subMonths(lastMonthEnd, i);
         months.push({
           year: getYear(d),
           month: getMonth(d),
@@ -723,7 +724,7 @@ export default function Dashboard() {
                       </span>
                     </div>
                     <div className="flex items-center gap-3 text-xs text-gray-500">
-                      <span>亩产 {fmtKg(crop.yieldKg)}</span>
+                      <span>累计产量 {fmtKg(crop.yieldKg)}</span>
                       <span>·</span>
                       <span>收入 {fmtMoney(crop.revenue)}</span>
                     </div>

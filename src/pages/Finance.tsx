@@ -4,7 +4,7 @@ import {
   Wallet, TrendingUp, TrendingDown, Plus, Filter,
   Trash2, Calendar, MapPin, Sprout, Coins,
 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { format, parseISO, isWithinInterval } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { useAppStore } from '@/store/useAppStore';
 import PageHeader from '@/components/PageHeader';
@@ -44,6 +44,8 @@ export default function Finance() {
   const [activeTab, setActiveTab] = useState<TabKey>('cost');
   const [seasonFilter, setSeasonFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<CostCategory | 'all'>('all');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; id: string | null }>({ open: false, id: null });
 
@@ -54,10 +56,14 @@ export default function Finance() {
     }
     const seasonFromUrl = searchParams.get('season');
     const categoryFromUrl = searchParams.get('category') as CostCategory | null;
+    const dateFromUrl = searchParams.get('dateFrom');
+    const dateToUrl = searchParams.get('dateTo');
     if (seasonFromUrl) setSeasonFilter(seasonFromUrl);
     if (categoryFromUrl && ['seed','pesticide','fertilizer','labor','other'].includes(categoryFromUrl)) {
       setCategoryFilter(categoryFromUrl);
     }
+    if (dateFromUrl) setDateFrom(dateFromUrl);
+    if (dateToUrl) setDateTo(dateToUrl);
     if (searchParams.get('new') === '1') {
       setModalOpen(true);
       setSearchParams({}, { replace: true });
@@ -70,9 +76,26 @@ export default function Finance() {
     amount: '', date: todayStr, description: '',
   });
 
+  // 按时间范围过滤的成本和收成（全局用）
+  const timeFilteredCosts = useMemo(() => {
+    if (!dateFrom || !dateTo) return costs;
+    return costs.filter(c =>
+      isWithinInterval(parseISO(c.date), { start: parseISO(dateFrom), end: parseISO(dateTo) })
+    );
+  }, [costs, dateFrom, dateTo]);
+
+  const timeFilteredHarvests = useMemo(() => {
+    if (!dateFrom || !dateTo) return harvests;
+    return harvests.filter(h =>
+      isWithinInterval(parseISO(h.harvestDate), { start: parseISO(dateFrom), end: parseISO(dateTo) })
+    );
+  }, [harvests, dateFrom, dateTo]);
+
+  const hasTimeFilter = Boolean(dateFrom && dateTo);
+
   const summary = useMemo(() =>
-    calculateAllSeasonsFinanceSummary(seasons, fields, costs, harvests),
-    [seasons, fields, costs, harvests]);
+    calculateAllSeasonsFinanceSummary(seasons, fields, timeFilteredCosts, timeFilteredHarvests),
+    [seasons, fields, timeFilteredCosts, timeFilteredHarvests]);
 
   const roi = summary.totalCost > 0
     ? Number((summary.totalRevenue / summary.totalCost).toFixed(2))
@@ -84,16 +107,22 @@ export default function Finance() {
     [...costs]
       .filter(c => seasonFilter === 'all' || c.seasonId === seasonFilter)
       .filter(c => categoryFilter === 'all' || c.category === categoryFilter)
+      .filter(c => {
+        if (!dateFrom || !dateTo) return true;
+        return isWithinInterval(parseISO(c.date), { start: parseISO(dateFrom), end: parseISO(dateTo) });
+      })
       .sort((a, b) => parseISO(b.date).getTime() - parseISO(a.date).getTime()),
-    [costs, seasonFilter, categoryFilter]);
+    [costs, seasonFilter, categoryFilter, dateFrom, dateTo]);
 
   const hasCostFilter = useMemo(() =>
-    seasonFilter !== 'all' || categoryFilter !== 'all',
-    [seasonFilter, categoryFilter]);
+    seasonFilter !== 'all' || categoryFilter !== 'all' || (dateFrom && dateTo),
+    [seasonFilter, categoryFilter, dateFrom, dateTo]);
 
   const clearCostFilters = () => {
     setSeasonFilter('all');
     setCategoryFilter('all');
+    setDateFrom('');
+    setDateTo('');
   };
 
   const costStructureData = useMemo(() => {
@@ -121,11 +150,11 @@ export default function Finance() {
 
   const seasonCards = useMemo(() => harvestedSeasons.map(season => {
     const field = fields.find(f => f.id === season.fieldId);
-    const breakdown = getCostBreakdownByCategory(season.id, costs);
-    const totalCost = calculateSeasonTotalCost(season.id, costs);
-    const revenue = calculateSeasonRevenue(season.id, harvests);
-    const profit = calculateSeasonProfit(season.id, costs, harvests);
-    const metrics = calculatePerMuMetrics(season.id, seasons, fields, costs, harvests);
+    const breakdown = getCostBreakdownByCategory(season.id, timeFilteredCosts);
+    const totalCost = calculateSeasonTotalCost(season.id, timeFilteredCosts);
+    const revenue = calculateSeasonRevenue(season.id, timeFilteredHarvests);
+    const profit = calculateSeasonProfit(season.id, timeFilteredCosts, timeFilteredHarvests);
+    const metrics = calculatePerMuMetrics(season.id, seasons, fields, timeFilteredCosts, timeFilteredHarvests);
     const roiSeason = totalCost > 0 ? (revenue / totalCost) : 0;
 
     const categoryBreakdown = COST_CATEGORIES.map(c => {
@@ -133,19 +162,23 @@ export default function Finance() {
       return { category: c, label: COST_CATEGORY_LABEL[c], amount: item?.amount || 0 };
     });
 
+    const seasonHarvests = timeFilteredHarvests.filter(h => h.seasonId === season.id);
+
     return {
       season, field, breakdown: categoryBreakdown,
       totalCost, revenue, profit, metrics, roi: roiSeason,
-      totalYield: harvests.filter(h => h.seasonId === season.id).reduce((s, h) => s + h.actualYieldKg, 0),
+      totalYield: seasonHarvests.reduce((s, h) => s + h.actualYieldKg, 0),
       avgUnitPrice: (() => {
-        const hs = harvests.filter(h => h.seasonId === season.id);
+        const hs = seasonHarvests;
         if (hs.length === 0) return 0;
         const totalRev = hs.reduce((s, h) => s + h.actualYieldKg * h.unitPrice, 0);
         const totalKg = hs.reduce((s, h) => s + h.actualYieldKg, 0);
         return totalKg > 0 ? Number((totalRev / totalKg).toFixed(2)) : 0;
       })(),
+      hasData: totalCost > 0 || revenue > 0,
     };
-  }), [harvestedSeasons, fields, costs, harvests, seasons]);
+  }).filter(card => !hasTimeFilter || card.hasData),
+  [harvestedSeasons, fields, timeFilteredCosts, timeFilteredHarvests, seasons, hasTimeFilter]);
 
   const openCreateModal = () => {
     setForm({ seasonId: seasons[0]?.id || '', category: 'seed', amount: '', date: todayStr, description: '' });
@@ -225,6 +258,34 @@ export default function Finance() {
         />
       </div>
 
+      {hasTimeFilter && (
+        <div className="flex items-center gap-3 text-sm">
+          <div className="flex items-center gap-2">
+            <Calendar className="w-4 h-4 text-farm-primary" />
+            <span className="text-gray-600">时间范围：</span>
+            <input
+              type="date"
+              className="input-field !w-32 !py-1.5 !text-sm"
+              value={dateFrom}
+              onChange={e => setDateFrom(e.target.value)}
+            />
+            <span className="text-gray-400">至</span>
+            <input
+              type="date"
+              className="input-field !w-32 !py-1.5 !text-sm"
+              value={dateTo}
+              onChange={e => setDateTo(e.target.value)}
+            />
+          </div>
+          <button
+            onClick={() => { setDateFrom(''); setDateTo(''); }}
+            className="text-xs text-gray-500 hover:text-farm-primary transition-colors"
+          >
+            清除时间筛选
+          </button>
+        </div>
+      )}
+
       <div className="card p-1 inline-flex gap-1">
         <button
           onClick={() => setActiveTab('cost')}
@@ -255,7 +316,7 @@ export default function Finance() {
           <div className="card">
             <div className="flex items-center gap-2 mb-4 text-sm">
               <Filter className="w-4 h-4 text-gray-500" />
-              <span className="font-medium">成本筛选：</span>
+              <span className="font-medium">筛选：</span>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2">
@@ -284,6 +345,31 @@ export default function Finance() {
                   ))}
                 </select>
               </div>
+              {!hasTimeFilter && (
+                <div className="flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-gray-400" />
+                  <input
+                    type="date"
+                    className="input-field !w-32"
+                    value={dateFrom}
+                    onChange={e => setDateFrom(e.target.value)}
+                    placeholder="开始日期"
+                  />
+                  <span className="text-gray-400 text-sm">至</span>
+                  <input
+                    type="date"
+                    className="input-field !w-32"
+                    value={dateTo}
+                    onChange={e => setDateTo(e.target.value)}
+                    placeholder="结束日期"
+                  />
+                </div>
+              )}
+              {hasCostFilter && (
+                <button onClick={clearCostFilters} className="btn-ghost text-sm">
+                  清除筛选
+                </button>
+              )}
             </div>
           </div>
 
@@ -384,7 +470,17 @@ export default function Finance() {
       {activeTab === 'revenue' && (
         <div className="space-y-4">
           {seasonCards.length === 0 ? (
-            <EmptyState icon={Sprout} title="暂无已收获种植季" description="等种植季收获后可查看收益明细" />
+            hasTimeFilter ? (
+              <EmptyState
+                icon={Sprout}
+                title="未找到匹配的收益记录"
+                description="当前时间范围内没有已收获的种植季，试试调整时间范围"
+                variant="no-match"
+                onClearFilter={() => { setDateFrom(''); setDateTo(''); }}
+              />
+            ) : (
+              <EmptyState icon={Sprout} title="暂无已收获种植季" description="等种植季收获后可查看收益明细" />
+            )
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
               {seasonCards.map(({ season, field, breakdown, totalCost, revenue, profit, metrics, roi, totalYield, avgUnitPrice }) => {
