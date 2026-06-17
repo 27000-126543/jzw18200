@@ -70,6 +70,10 @@ export default function Operations() {
       setIsModalOpen(true);
       setSearchParams({}, { replace: true });
     }
+    const seasonFromUrl = searchParams.get('season');
+    const typeFromUrl = searchParams.get('type') as OperationType | null;
+    if (seasonFromUrl) setSelectedSeasonId(seasonFromUrl);
+    if (typeFromUrl) setSelectedType(typeFromUrl);
   }, [searchParams, setSearchParams]);
 
   const [form, setForm] = useState({

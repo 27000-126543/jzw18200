@@ -3,24 +3,36 @@ import { useNavigate } from 'react-router-dom';
 import {
   MapPin, Sprout, ClipboardList, TrendingUp,
   Plus, Calendar, ArrowRight, Bell, CheckCircle2,
+  BarChart3, Coins, Leaf, Wheat, Droplets,
+  ChevronDown, CircleDollarSign, CalendarRange,
 } from 'lucide-react';
-import { format, parseISO, differenceInDays, addDays } from 'date-fns';
+import { format, parseISO, differenceInDays, addDays, startOfYear, endOfYear, isWithinInterval } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { useAppStore } from '@/store/useAppStore';
 import PageHeader from '@/components/PageHeader';
 import StatCard from '@/components/StatCard';
-import Modal from '@/components/Modal';
 import EmptyState from '@/components/EmptyState';
-import ConfirmDialog from '@/components/ConfirmDialog';
-import { LineChart } from '@/components/charts';
+import { LineChart, BarChart } from '@/components/charts';
 import { CROP_VARIETIES } from '@/data/mockData';
-import { SOIL_TYPE_LABEL, OPERATION_TYPE_LABEL, SEASON_STATUS_LABEL, QUALITY_LEVEL_LABEL } from '@/types';
-import type { ReminderPriority } from '@/types';
+import {
+  OPERATION_TYPE_LABEL,
+  OPERATION_TYPE_EMOJI,
+  type ReminderPriority,
+  type OperationType,
+} from '@/types';
+import type { Season, Harvest, Cost } from '@/types';
+import { cn } from '@/lib/utils';
 
 const priorityColorMap: Record<ReminderPriority, string> = {
   high: 'bg-farm-danger',
   medium: 'bg-farm-warning',
   low: 'bg-farm-info',
+};
+
+const priorityBadgeMap: Record<ReminderPriority, string> = {
+  high: 'badge-danger',
+  medium: 'badge-warning',
+  low: 'badge-info',
 };
 
 const cropColors: Record<string, string> = {
@@ -34,22 +46,34 @@ const cropColors: Record<string, string> = {
   土豆: '#A97B5F',
 };
 
+type OverviewRange = 'year' | '12m';
+
+interface OverviewPoint {
+  label: string;
+  value: number;
+  yieldKg: number;
+  revenue: number;
+  cost: number;
+  profit: number;
+  [key: string]: string | number;
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { fields, seasons, operations, harvests, reminders, showToast, updateReminderStatus } = useAppStore();
-  const [quickModalOpen, setQuickModalOpen] = useState<string | null>(null);
+  const { fields, seasons, operations, harvests, costs, reminders, showToast, updateReminderStatus } = useAppStore();
+  const [overviewRange, setOverviewRange] = useState<OverviewRange>('12m');
 
-  const growingSeasons = useMemo(() => seasons.filter(s => s.status !== 'harvested'), [seasons]);
+  // ==== 1. 基础统计 ====
+  const growingSeasons = useMemo(
+    () => seasons.filter(s => s.status !== 'harvested'),
+    [seasons]
+  );
 
   const currentMonthOperations = useMemo(() => {
     const now = new Date();
     const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     return operations.filter(op => op.date.startsWith(ym));
   }, [operations]);
-
-  const totalRevenue = useMemo(() => {
-    return harvests.reduce((sum, h) => sum + h.actualYieldKg * h.unitPrice, 0);
-  }, [harvests]);
 
   const lastMonthSameCount = useMemo(() => {
     const now = new Date();
@@ -61,9 +85,13 @@ export default function Dashboard() {
   const operationTrend = useMemo(() => {
     if (lastMonthSameCount === 0 && currentMonthOperations.length === 0) return undefined;
     if (lastMonthSameCount === 0) return currentMonthOperations.length > 0 ? undefined : 0;
-    const pct = Math.round(((currentMonthOperations.length - lastMonthSameCount) / lastMonthSameCount) * 100);
-    return pct;
+    return Math.round(((currentMonthOperations.length - lastMonthSameCount) / lastMonthSameCount) * 100);
   }, [currentMonthOperations, lastMonthSameCount]);
+
+  const totalRevenue = useMemo(
+    () => harvests.reduce((sum, h) => sum + h.actualYieldKg * h.unitPrice, 0),
+    [harvests]
+  );
 
   const revenueTrend = useMemo(() => {
     if (harvests.length === 0) return undefined;
@@ -76,11 +104,106 @@ export default function Dashboard() {
     const sumLast = harvests
       .filter(h => h.harvestDate.startsWith(String(lastYear)))
       .reduce((s, h) => s + h.actualYieldKg * h.unitPrice, 0);
-    if (sumLast === 0 && sumThis === 0) return undefined;
     if (sumLast === 0) return undefined;
     return Math.round(((sumThis - sumLast) / sumLast) * 100);
   }, [harvests]);
 
+  // ==== 2. 经营概览数据 ====
+  const overviewData = useMemo<OverviewPoint[]>(() => {
+    const now = new Date();
+    const points: OverviewPoint[] = [];
+    const count = overviewRange === 'year' ? 12 : 12;
+    const startPoint = overviewRange === 'year' ? startOfYear(now) : addDays(now, -330);
+
+    for (let i = 0; i < count; i++) {
+      const d = addDays(startPoint, i * 30);
+      const label = format(d, 'M月', { locale: zhCN });
+      points.push({ label, value: 0, yieldKg: 0, revenue: 0, cost: 0, profit: 0 });
+    }
+
+    // 收成数据聚合
+    harvests.forEach(h => {
+      const hd = parseISO(h.harvestDate);
+      const idx = Math.floor(differenceInDays(hd, startPoint) / 30);
+      if (idx >= 0 && idx < count) {
+        points[idx].yieldKg += h.actualYieldKg;
+        const rev = h.actualYieldKg * h.unitPrice;
+        points[idx].revenue += rev;
+        points[idx].profit += rev;
+      }
+    });
+
+    // 成本数据聚合
+    costs.forEach(c => {
+      const cd = parseISO(c.date);
+      const idx = Math.floor(differenceInDays(cd, startPoint) / 30);
+      if (idx >= 0 && idx < count) {
+        points[idx].cost += c.amount;
+        points[idx].profit -= c.amount;
+      }
+    });
+
+    points.forEach(p => { p.value = p.profit; });
+    return points;
+  }, [overviewRange, harvests, costs]);
+
+  const hasOverviewData = useMemo(
+    () => overviewData.some(p => p.yieldKg > 0 || p.revenue > 0 || p.cost > 0),
+    [overviewData]
+  );
+
+  const overviewSummary = useMemo(() => {
+    return overviewData.reduce(
+      (acc, p) => ({
+        yieldKg: acc.yieldKg + p.yieldKg,
+        revenue: acc.revenue + p.revenue,
+        cost: acc.cost + p.cost,
+        profit: acc.profit + p.profit,
+      }),
+      { yieldKg: 0, revenue: 0, cost: 0, profit: 0 }
+    );
+  }, [overviewData]);
+
+  // ==== 3. 产量趋势（品种分解，空态友好）====
+  const { yieldTrendData, yieldLines, hasYieldData } = useMemo(() => {
+    const now = new Date();
+    interface LinePt { label: string; value: number; [k: string]: string | number; }
+    const months: LinePt[] = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = addDays(now, -i * 30);
+      months.push({ label: format(d, 'M月', { locale: zhCN }), value: 0 });
+    }
+
+    const usedCrops = new Set<string>();
+    harvests.forEach(h => {
+      const season = seasons.find(s => s.id === h.seasonId);
+      if (!season) return;
+      usedCrops.add(season.cropName);
+      const hd = parseISO(h.harvestDate);
+      const diff = differenceInDays(now, hd);
+      const idx = 11 - Math.floor(diff / 30);
+      if (idx >= 0 && idx < 12) {
+        months[idx][season.cropName] = (Number(months[idx][season.cropName]) || 0) + h.actualYieldKg;
+        months[idx].value += h.actualYieldKg;
+      }
+    });
+
+    const lines = CROP_VARIETIES
+      .filter(cv => usedCrops.has(cv.name))
+      .map(cv => ({
+        key: cv.name,
+        label: cv.name,
+        color: cropColors[cv.name] || '#2D6A4F',
+      }));
+
+    return {
+      yieldTrendData: months,
+      yieldLines: lines,
+      hasYieldData: usedCrops.size > 0,
+    };
+  }, [harvests, seasons]);
+
+  // ==== 4. 待办提醒 & 最近操作 ====
   const sortedReminders = useMemo(() => {
     const weight: Record<ReminderPriority, number> = { high: 0, medium: 1, low: 2 };
     return [...reminders]
@@ -93,53 +216,14 @@ export default function Dashboard() {
       .slice(0, 5);
   }, [reminders]);
 
-  const recentOperations = useMemo(() => {
-    return [...operations]
+  const recentOperations = useMemo(
+    () => [...operations]
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-      .slice(0, 5);
-  }, [operations]);
+      .slice(0, 5),
+    [operations]
+  );
 
-  const yieldTrendData = useMemo(() => {
-    const now = new Date();
-    interface LinePt { label: string; value: number; [k: string]: string | number; }
-    const months: LinePt[] = [];
-    for (let i = 11; i >= 0; i--) {
-      const d = addDays(now, -i * 30);
-      const label = format(d, 'M月', { locale: zhCN });
-      const item: LinePt = { label, value: 0 };
-      CROP_VARIETIES.forEach(cv => { item[cv.name] = 0; });
-      months.push(item);
-    }
-    harvests.forEach(h => {
-      const season = seasons.find(s => s.id === h.seasonId);
-      if (!season) return;
-      const hd = parseISO(h.harvestDate);
-      const diff = differenceInDays(now, hd);
-      const idx = 11 - Math.floor(diff / 30);
-      if (idx >= 0 && idx < 12) {
-        months[idx][season.cropName] = (Number(months[idx][season.cropName]) || 0) + h.actualYieldKg;
-        months[idx].value += h.actualYieldKg;
-      }
-    });
-    return months;
-  }, [harvests, seasons]);
-
-  const yieldLines = useMemo(() => {
-    const usedCrops = new Set<string>();
-    harvests.forEach(h => {
-      const s = seasons.find(ss => ss.id === h.seasonId);
-      if (s) usedCrops.add(s.cropName);
-    });
-    return CROP_VARIETIES
-      .filter(cv => usedCrops.has(cv.name) || ['小麦', '玉米', '水稻'].includes(cv.name))
-      .slice(0, 5)
-      .map(cv => ({
-        key: cv.name,
-        label: cv.name,
-        color: cropColors[cv.name] || `hsl(${Math.random() * 360}, 60%, 45%)`,
-      }));
-  }, [harvests, seasons]);
-
+  // ==== 5. 交互 ====
   const handleQuickAction = (action: string) => {
     if (action === 'field') {
       navigate('/fields');
@@ -158,6 +242,35 @@ export default function Dashboard() {
     showToast('待办已标记完成', 'success');
   };
 
+  const goToReminder = (status?: string, seasonId?: string) => {
+    const params = new URLSearchParams();
+    if (status) params.set('tab', status);
+    if (seasonId) params.set('season', seasonId);
+    navigate(`/reminders${params.toString() ? '?' + params.toString() : ''}`);
+  };
+
+  const goToOperations = (seasonId?: string, opType?: OperationType) => {
+    const params = new URLSearchParams();
+    if (seasonId) params.set('season', seasonId);
+    if (opType) params.set('type', opType);
+    navigate(`/operations${params.toString() ? '?' + params.toString() : ''}`);
+  };
+
+  const goToFinance = (tab: 'cost' | 'revenue' = 'cost', seasonId?: string) => {
+    const params = new URLSearchParams();
+    params.set('tab', tab);
+    if (seasonId) params.set('season', seasonId);
+    navigate(`/finance?${params.toString()}`);
+  };
+
+  const goToSeasons = (fieldId?: string) => {
+    navigate('/seasons' + (fieldId ? `?field=${fieldId}` : ''));
+  };
+
+  // 格式化金额
+  const fmtMoney = (v: number) => `¥${v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
+  const fmtKg = (v: number) => `${v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}kg`;
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -166,13 +279,14 @@ export default function Dashboard() {
         breadcrumb={[]}
       />
 
+      {/* ==== 顶部统计卡：仅在有真实对比时显示趋势 ==== */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           title="地块总数"
           value={fields.length}
           suffix="个"
           icon={MapPin}
-          trend={fields.length > 0 ? 0 : undefined}
+          trend={undefined}
           gradient="primary"
         />
         <StatCard
@@ -193,18 +307,19 @@ export default function Dashboard() {
         />
         <StatCard
           title="已登记收益"
-          value={`¥${totalRevenue.toLocaleString('zh-CN')}`}
+          value={fmtMoney(totalRevenue)}
           icon={TrendingUp}
           trend={revenueTrend}
           gradient="info"
         />
       </div>
 
+      {/* ==== 快捷操作 ==== */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {[
           { key: 'field', title: '新增地块', desc: '登记新的耕地信息', icon: Plus, color: 'from-farm-primary to-farm-primary-light' },
           { key: 'operation', title: '记录操作', desc: '录入施肥/打药/灌溉等', icon: ClipboardList, color: 'from-farm-secondary to-farm-secondary-light' },
-          { key: 'harvest', title: '录入产量', desc: '登记收成与品质数据', icon: TrendingUp, color: 'from-farm-accent to-farm-accent-light' },
+          { key: 'harvest', title: '录入产量', desc: '登记收成与品质数据', icon: BarChart3, color: 'from-farm-accent to-farm-accent-light' },
         ].map(item => (
           <button
             key={item.key}
@@ -227,14 +342,185 @@ export default function Dashboard() {
         ))}
       </div>
 
+      {/* ==== 经营概览区 ==== */}
+      <div className="card">
+        <div className="flex items-start justify-between mb-5 flex-wrap gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-farm-primary-dark flex items-center gap-2">
+              <Coins className="w-5 h-5 text-farm-secondary" />
+              经营概览
+              <span className="text-xs font-normal text-gray-500 ml-1">
+                产量 · 收入 · 成本 · 利润
+              </span>
+            </h2>
+            <p className="text-sm text-gray-500 mt-1">
+              追踪核心经营指标的变化趋势，辅助种植决策
+            </p>
+          </div>
+          <div className="flex items-center gap-1 p-1 bg-farm-surface-alt rounded-lg">
+            <button
+              onClick={() => setOverviewRange('year')}
+              className={cn(
+                'px-3.5 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5',
+                overviewRange === 'year'
+                  ? 'bg-farm-surface text-farm-primary shadow-card'
+                  : 'text-gray-500 hover:text-farm-primary'
+              )}
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              本年度
+            </button>
+            <button
+              onClick={() => setOverviewRange('12m')}
+              className={cn(
+                'px-3.5 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5',
+                overviewRange === '12m'
+                  ? 'bg-farm-surface text-farm-primary shadow-card'
+                  : 'text-gray-500 hover:text-farm-primary'
+              )}
+            >
+              <CalendarRange className="w-3.5 h-3.5" />
+              近12个月
+            </button>
+          </div>
+        </div>
+
+        {!hasOverviewData ? (
+          <EmptyState
+            icon={Wheat}
+            title="暂无经营数据"
+            description="录入收成与成本记录后，这里将展示产量、收入、成本和利润的变化趋势"
+            actionText="录入收成"
+            onAction={() => handleQuickAction('harvest')}
+          />
+        ) : (
+          <>
+            {/* 概览汇总卡 */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+              {[
+                {
+                  label: '累计产量',
+                  value: fmtKg(overviewSummary.yieldKg),
+                  icon: Wheat,
+                  color: 'text-farm-primary',
+                  bg: 'bg-farm-primary/10',
+                  onClick: () => navigate('/harvest'),
+                },
+                {
+                  label: '总收入',
+                  value: fmtMoney(overviewSummary.revenue),
+                  icon: TrendingUp,
+                  color: 'text-emerald-600',
+                  bg: 'bg-emerald-50',
+                  onClick: () => goToFinance('revenue'),
+                },
+                {
+                  label: '总成本',
+                  value: fmtMoney(overviewSummary.cost),
+                  icon: CircleDollarSign,
+                  color: 'text-amber-600',
+                  bg: 'bg-amber-50',
+                  onClick: () => goToFinance('cost'),
+                },
+                {
+                  label: overviewSummary.profit >= 0 ? '净利润' : '净亏损',
+                  value: (overviewSummary.profit >= 0 ? '' : '-') + fmtMoney(Math.abs(overviewSummary.profit)),
+                  icon: Coins,
+                  color: overviewSummary.profit >= 0 ? 'text-farm-primary-dark' : 'text-farm-danger',
+                  bg: overviewSummary.profit >= 0 ? 'bg-farm-primary/10' : 'bg-farm-danger/10',
+                  onClick: () => goToFinance('revenue'),
+                },
+              ].map(item => (
+                <button
+                  key={item.label}
+                  onClick={item.onClick}
+                  className="p-4 rounded-xl bg-farm-surface-alt/70 hover:bg-farm-surface-alt border border-farm-border/40 text-left transition-all group"
+                >
+                  <div className="flex items-start justify-between mb-2">
+                    <span className="text-xs text-gray-500">{item.label}</span>
+                    <div className={`w-7 h-7 rounded-lg ${item.bg} flex items-center justify-center`}>
+                      <item.icon className={`w-3.5 h-3.5 ${item.color}`} />
+                    </div>
+                  </div>
+                  <div className={`text-lg font-bold ${item.color} group-hover:translate-x-0.5 transition-transform`}>
+                    {item.value}
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {/* 趋势双图：收入/成本/利润 折线 + 产量 柱状 */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+              <div className="lg:col-span-2">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
+                    <CircleDollarSign className="w-4 h-4 text-farm-secondary" />
+                    收入 · 成本 · 利润趋势
+                  </h3>
+                  <div className="flex items-center gap-3 text-xs text-gray-500">
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-full bg-farm-primary" />
+                      收入
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-full bg-farm-warning" />
+                      成本
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-full bg-farm-success" />
+                      利润
+                    </span>
+                  </div>
+                </div>
+                <LineChart
+                  data={overviewData}
+                  lines={[
+                    { key: 'revenue', label: '收入', color: '#2D6A4F' },
+                    { key: 'cost', label: '成本', color: '#F4A261' },
+                    { key: 'profit', label: '利润', color: '#52B788' },
+                  ]}
+                  height={240}
+                  yUnit="¥"
+                  showArea={false}
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
+                    <Wheat className="w-4 h-4 text-farm-primary" />
+                    月度产量
+                  </h3>
+                </div>
+                <BarChart
+                  data={overviewData.map(p => ({
+                    label: p.label,
+                    value: p.yieldKg,
+                    color: '#D4A373',
+                  }))}
+                  height={240}
+                  yUnit="kg"
+                  showValue={false}
+                />
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ==== 待办提醒 + 最近操作 ==== */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* 待办提醒 */}
         <div className="card">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-farm-primary-dark flex items-center gap-2">
+            <button
+              onClick={() => goToReminder()}
+              className="text-lg font-semibold text-farm-primary-dark flex items-center gap-2 hover:text-farm-primary transition-colors group"
+            >
               <Bell className="w-5 h-5 text-farm-warning" />
               待办提醒
-              <span className="text-xs font-normal text-gray-500">按优先级排序</span>
-            </h2>
+              <ArrowRight className="w-4 h-4 text-gray-400 group-hover:translate-x-0.5 transition-transform" />
+            </button>
+            <span className="text-xs font-normal text-gray-500">按优先级排序</span>
           </div>
           {sortedReminders.length === 0 ? (
             <EmptyState icon={CheckCircle2} title="暂无待办" description="所有农事提醒已完成" />
@@ -249,19 +535,26 @@ export default function Dashboard() {
                     className="flex items-center gap-3 p-3 rounded-lg bg-farm-surface-alt/60 hover:bg-farm-surface-alt transition-colors group"
                   >
                     <div className={`w-1.5 h-12 rounded-full shrink-0 ${priorityColorMap[r.priority]}`} />
-                    <div className="flex-1 min-w-0">
+                    <button
+                      onClick={() => goToReminder(r.status === 'overdue' ? 'overdue' : 'pending', r.seasonId)}
+                      className="flex-1 min-w-0 text-left"
+                    >
                       <div className="flex items-center gap-2 mb-0.5">
                         <span className="font-medium text-farm-primary-dark truncate">{r.type}</span>
+                        <span className={`badge ${priorityBadgeMap[r.priority]} shrink-0`}>
+                          {r.priority === 'high' ? '高' : r.priority === 'medium' ? '中' : '低'}
+                        </span>
                         {r.status === 'overdue' && (
-                          <span className="badge badge-danger shrink-0">已逾期</span>
+                          <span className="badge badge-danger shrink-0 animate-pulse-soft">已逾期</span>
                         )}
                       </div>
                       <div className="flex items-center gap-2 text-xs text-gray-500">
                         <Calendar className="w-3 h-3" />
                         <span>{r.targetDate}</span>
                         {field && <span className="truncate">· {field.name}</span>}
+                        {season && <span>· {season.cropName}</span>}
                       </div>
-                    </div>
+                    </button>
                     <button
                       onClick={() => handleMarkReminderDone(r.id)}
                       className="btn-ghost px-2 py-1 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
@@ -269,10 +562,10 @@ export default function Dashboard() {
                       标记完成
                     </button>
                     <button
-                      onClick={() => navigate('/reminders')}
+                      onClick={() => goToOperations(r.seasonId)}
                       className="btn-secondary px-2.5 py-1 text-xs shrink-0"
                     >
-                      查看
+                      记录操作
                     </button>
                   </div>
                 );
@@ -281,25 +574,41 @@ export default function Dashboard() {
           )}
         </div>
 
+        {/* 最近操作 */}
         <div className="card">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-farm-primary-dark flex items-center gap-2">
+            <button
+              onClick={() => goToOperations()}
+              className="text-lg font-semibold text-farm-primary-dark flex items-center gap-2 hover:text-farm-primary transition-colors group"
+            >
               <ClipboardList className="w-5 h-5 text-farm-primary" />
               最近操作
-            </h2>
+              <ArrowRight className="w-4 h-4 text-gray-400 group-hover:translate-x-0.5 transition-transform" />
+            </button>
           </div>
           {recentOperations.length === 0 ? (
-            <EmptyState icon={ClipboardList} title="暂无操作记录" description="开始记录您的农事操作" />
+            <EmptyState
+              icon={ClipboardList}
+              title="暂无操作记录"
+              description="开始记录您的农事操作"
+              actionText="记录操作"
+              onAction={() => handleQuickAction('operation')}
+            />
           ) : (
             <div className="relative pl-2">
               <div className="absolute left-5 top-2 bottom-2 w-0.5 bg-farm-border" />
               <div className="space-y-4">
                 {recentOperations.map(op => {
                   const season = seasons.find(s => s.id === op.seasonId);
+                  const field = fields.find(f => f.id === season?.fieldId);
                   return (
-                    <div key={op.id} className="relative flex items-start gap-3 pl-5">
-                      <div className="absolute left-0 top-1.5 w-10 h-10 rounded-full bg-farm-primary/10 border-2 border-farm-surface flex items-center justify-center shrink-0 z-10">
-                        <div className="w-3 h-3 rounded-full bg-farm-primary" />
+                    <button
+                      key={op.id}
+                      onClick={() => goToOperations(op.seasonId, op.type)}
+                      className="w-full text-left relative flex items-start gap-3 pl-5 group"
+                    >
+                      <div className="absolute left-0 top-1.5 w-10 h-10 rounded-full bg-farm-primary/10 border-2 border-farm-surface flex items-center justify-center shrink-0 z-10 text-base group-hover:scale-110 transition-transform">
+                        <span>{OPERATION_TYPE_EMOJI[op.type] ?? '📋'}</span>
                       </div>
                       <div className="flex-1 min-w-0 bg-farm-surface-alt/60 rounded-xl p-3 hover:bg-farm-surface-alt transition-colors">
                         <div className="flex items-center justify-between gap-2 mb-1">
@@ -309,6 +618,9 @@ export default function Dashboard() {
                             </span>
                             {season && (
                               <span className="text-xs text-gray-500">· {season.cropName}</span>
+                            )}
+                            {field && (
+                              <span className="text-xs text-gray-500 truncate">· {field.name}</span>
                             )}
                           </div>
                           <span className="text-xs text-gray-500 shrink-0">
@@ -321,7 +633,7 @@ export default function Dashboard() {
                           <span className="truncate">{op.dosage}</span>
                         </div>
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -330,39 +642,46 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* ==== 产量趋势图：空数据时显示空态 ==== */}
       <div className="card">
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-          <h2 className="text-lg font-semibold text-farm-primary-dark flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-farm-primary" />
+          <button
+            onClick={() => navigate('/harvest')}
+            className="text-lg font-semibold text-farm-primary-dark flex items-center gap-2 hover:text-farm-primary transition-colors group"
+          >
+            <BarChart3 className="w-5 h-5 text-farm-primary" />
             近12个月各品种产量趋势
-          </h2>
-          <div className="flex items-center gap-3 flex-wrap">
-            {yieldLines.map(line => (
-              <div key={line.key} className="flex items-center gap-1.5 text-xs text-gray-600">
-                <span className="w-3 h-3 rounded-full" style={{ backgroundColor: line.color }} />
-                {line.label}
-              </div>
-            ))}
-          </div>
+            <ArrowRight className="w-4 h-4 text-gray-400 group-hover:translate-x-0.5 transition-transform" />
+          </button>
+          {hasYieldData && (
+            <div className="flex items-center gap-3 flex-wrap">
+              {yieldLines.map(line => (
+                <div key={line.key} className="flex items-center gap-1.5 text-xs text-gray-600">
+                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: line.color }} />
+                  {line.label}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        <LineChart
-          data={yieldTrendData}
-          lines={yieldLines}
-          height={280}
-          yUnit="kg"
-          showArea={false}
-        />
+        {!hasYieldData ? (
+          <EmptyState
+            icon={Leaf}
+            title="暂无收成趋势"
+            description="录入首条收成记录后，这里将展示各品种的月度产量变化曲线"
+            actionText="录入第一条收成"
+            onAction={() => handleQuickAction('harvest')}
+          />
+        ) : (
+          <LineChart
+            data={yieldTrendData}
+            lines={yieldLines.length > 0 ? yieldLines : [{ key: 'value', color: '#2D6A4F', label: '总产量' }]}
+            height={280}
+            yUnit="kg"
+            showArea={false}
+          />
+        )}
       </div>
-
-      <Modal
-        isOpen={!!quickModalOpen}
-        onClose={() => setQuickModalOpen(null)}
-        title="快捷操作"
-      >
-        <div className="py-4 text-center text-gray-600">
-          请通过上方导航进入对应功能页面
-        </div>
-      </Modal>
     </div>
   );
 }

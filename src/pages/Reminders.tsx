@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import PageHeader from '@/components/PageHeader';
 import Modal from '@/components/Modal';
@@ -42,10 +43,24 @@ export default function Reminders() {
   const updateReminderStatus = useAppStore((s) => s.updateReminderStatus);
   const showToast = useAppStore((s) => s.showToast);
 
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+
   const [activeTab, setActiveTab] = useState<TabKey>('all');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [cropVarieties, setCropVarieties] = useState<CropVariety[]>(CROP_VARIETIES);
   const [advanceDays, setAdvanceDays] = useState(2);
+
+  useEffect(() => {
+    const tabFromUrl = searchParams.get('tab') as TabKey | null;
+    if (tabFromUrl && ['all', 'pending', 'completed', 'overdue'].includes(tabFromUrl)) {
+      setActiveTab(tabFromUrl);
+    }
+    const seasonFromUrl = searchParams.get('season');
+    if (seasonFromUrl) {
+      // season筛选可后续扩展
+    }
+  }, [searchParams]);
 
   const today = useMemo(() => new Date(), []);
 

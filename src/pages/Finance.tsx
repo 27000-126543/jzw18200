@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Wallet, TrendingUp, TrendingDown, Plus, Filter,
   Trash2, Calendar, MapPin, Sprout, Coins,
@@ -39,11 +40,25 @@ type TabKey = 'cost' | 'revenue';
 
 export default function Finance() {
   const { fields, seasons, costs, harvests, showToast, addCost, deleteCost } = useAppStore();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<TabKey>('cost');
   const [seasonFilter, setSeasonFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<CostCategory | 'all'>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; id: string | null }>({ open: false, id: null });
+
+  useEffect(() => {
+    const tabFromUrl = searchParams.get('tab') as TabKey | null;
+    if (tabFromUrl && ['cost', 'revenue'].includes(tabFromUrl)) {
+      setActiveTab(tabFromUrl);
+    }
+    const seasonFromUrl = searchParams.get('season');
+    if (seasonFromUrl) setSeasonFilter(seasonFromUrl);
+    if (searchParams.get('new') === '1') {
+      setModalOpen(true);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const todayStr = format(new Date(), 'yyyy-MM-dd');
   const [form, setForm] = useState({
